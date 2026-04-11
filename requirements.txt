@@ -1,0 +1,17 @@
+requests>=2.28.0
+lxml>=5.0.0
+gdown>=4.0.0
+gradio>=4.0.0
+Pillow>=10.0.0
+tqdm>=4.65.0
+torch>=2.0.0
+datasets>=2.14.0
+transformers>=4.40.0
+pytest>=7.0.0
+pytest-cov>=4.0.0
+# Для дообучения и для моделей по пути к папке (например clothes-detector-v2):
+# pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git" --no-deps
+# pip install unsloth_zoo trl peft accelerate bitsandbytes
+# Опционально: быстрый путь для Qwen3.5 MoE (нужны CUDA Toolkit + nvcc в PATH).
+# На многих ПК сборка causal_conv1d падает — без этого обучение идёт чуть медленнее, но работает.
+# pip install "flash-linear-attention[conv1d]"  # только если установлен CUDA Toolkit (nvcc)

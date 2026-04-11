@@ -1,0 +1,38 @@
+[
+  {
+    "label": "TSUM рубашка (в экспорте: кнопки)",
+    "url": "https://collect-static.tsum.com/sig/da7666699ef8dd66911acda34e6c2404/height/1526/document-hub/01HA9R3CBNK506Z6FH28MVYACV.jpg",
+    "name": "Хлопковая рубашка",
+    "category": "Женское / Блузки и рубашки / Рубашки",
+    "old_fastener": "кнопки",
+    "fastener": "пуговицы",
+    "print_pattern": "однотонный",
+    "collar": "отложной",
+    "pockets": "",
+    "avg_confidence": 75
+  },
+  {
+    "label": "TSUM пальто ёлочка (реф.)",
+    "url": "https://collect-static.tsum.com/sig/872f8cfa9b75bd10ebde712c5f8f07a9/height/1526/document-hub/01HA2J4G7QJK3KW2DA8WWNFP9M.jpg",
+    "name": "Пальто",
+    "category": "Женское / Верхняя одежда / Пальто",
+    "old_fastener": "",
+    "fastener": "",
+    "print_pattern": "ёлочка",
+    "collar": "лацкан",
+    "pockets": "да",
+    "avg_confidence": 75
+  },
+  {
+    "label": "TSUM жилет на завязках",
+    "url": "https://collect-static.tsum.com/sig/dd10ecbf51ae65459ebf4f7be0bee493/height/1526/document-hub/01HAHAPKF99CE7SJG081V6P3FD.jpg",
+    "name": "Жилет",
+    "category": "Женское / Верхняя одежда / Жилеты",
+    "old_fastener": "на завязках",
+    "fastener": "завязка",
+    "print_pattern": "полоска",
+    "collar": "v-образный вырез",
+    "pockets": "",
+    "avg_confidence": 86
+  }
+]
