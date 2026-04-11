@@ -748,22 +748,51 @@ def _parse_offer_row(d: dict) -> dict:
     return d
 
 
-def _filter_offer_picture_urls(d: dict, attr_filter: list[str] | None) -> dict:
+def _filter_offer_picture_urls(
+    d: dict,
+    attr_filter: list[str] | None,
+    index_filter: list[int] | None = None,
+) -> dict:
     """
     Если attr_filter задан — оставляет в picture_urls только URL из указанных тегов.
+    Если index_filter задан (список 1-based индексов) — дополнительно фильтрует по позиции
+    внутри каждого тега (или по всему picture_urls если attr_filter не задан).
     picture_tagged_urls не меняется.
     """
-    if not attr_filter:
-        return d
     tagged = d.get("picture_tagged_urls") or {}
-    filtered: list[str] = []
-    for key in attr_filter:
-        for u in tagged.get(key, []):
-            if u not in filtered:
-                filtered.append(u)
-    if filtered:
-        d = dict(d)
-        d["picture_urls"] = filtered
+
+    if attr_filter:
+        filtered: list[str] = []
+        if index_filter:
+            for key in attr_filter:
+                urls_for_tag = tagged.get(key, [])
+                for idx in index_filter:
+                    pos = idx - 1
+                    if 0 <= pos < len(urls_for_tag):
+                        u = urls_for_tag[pos]
+                        if u not in filtered:
+                            filtered.append(u)
+        else:
+            for key in attr_filter:
+                for u in tagged.get(key, []):
+                    if u not in filtered:
+                        filtered.append(u)
+        if filtered:
+            d = dict(d)
+            d["picture_urls"] = filtered
+    elif index_filter:
+        pic_urls = d.get("picture_urls") or []
+        filtered = []
+        for idx in index_filter:
+            pos = idx - 1
+            if 0 <= pos < len(pic_urls):
+                u = pic_urls[pos]
+                if u not in filtered:
+                    filtered.append(u)
+        if filtered:
+            d = dict(d)
+            d["picture_urls"] = filtered
+
     return d
 
 
@@ -773,12 +802,14 @@ def get_offers(
     limit: int = 0,
     offset: int = 0,
     picture_attr_filter: list[str] | None = None,
+    picture_index_filter: list[int] | None = None,
 ) -> list[dict]:
     """
     Fetch offers from cache.
     If categories is None or empty — return all.
     limit=0 means no limit.
     picture_attr_filter: если задан — picture_urls будет содержать только URL из этих тегов.
+    picture_index_filter: если задан — берём только картинки с указанными 1-based индексами.
     """
     con = sqlite_connect(db_path)
     con.row_factory = sqlite3.Row
@@ -801,7 +832,7 @@ def get_offers(
     result = []
     for row in rows:
         d = _parse_offer_row(dict(row))
-        d = _filter_offer_picture_urls(d, picture_attr_filter)
+        d = _filter_offer_picture_urls(d, picture_attr_filter, picture_index_filter)
         result.append(d)
     return result
 
@@ -810,6 +841,7 @@ def get_offer_by_id(
     db_path: str | Path,
     offer_id: str,
     picture_attr_filter: list[str] | None = None,
+    picture_index_filter: list[int] | None = None,
 ) -> dict | None:
     """Один оффер из кэша по offer_id (для повторной обработки с вкладки «Результаты»)."""
     if not offer_id or not db_path:
@@ -824,7 +856,7 @@ def get_offer_by_id(
     if not row:
         return None
     d = _parse_offer_row(dict(row))
-    d = _filter_offer_picture_urls(d, picture_attr_filter)
+    d = _filter_offer_picture_urls(d, picture_attr_filter, picture_index_filter)
     return d
 
 

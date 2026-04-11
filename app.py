@@ -329,7 +329,8 @@ def _resolve_offers_for_run(
         pm.clear_pending_run(project_name)
     existing_ids: set[str] = set() if force_reprocess else _get_processed_offer_ids(rdb)
     paf = [a for a in (pc.get("picture_attr_filter") or []) if a.strip()] or None
-    offers, skipped = _collect_offers_to_process(db, cats, limit_n, existing_ids, force_reprocess, picture_attr_filter=paf)
+    pif = [int(x) for x in (pc.get("picture_index_filter") or []) if str(x).isdigit()] or None
+    offers, skipped = _collect_offers_to_process(db, cats, limit_n, existing_ids, force_reprocess, picture_attr_filter=paf, picture_index_filter=pif)
     return offers, skipped, False, None, fp
 
 
@@ -340,22 +341,25 @@ def _collect_offers_to_process(
     existing_ids: set,
     force_reprocess: bool,
     picture_attr_filter: list[str] | None = None,
+    picture_index_filter: list[int] | None = None,
 ) -> tuple[list[dict], int]:
     """
     Подбор офферов к обработке. Если limit_n > 0 и часть первых N уже в результатах —
     листаем кэш дальше (offset), пока не наберётся нужное число необработанных.
     Возвращает (список офферов, число пропущенных как «уже в результатах» при обходе).
     picture_attr_filter: если задан — picture_urls будет содержать только URL из этих тегов.
+    picture_index_filter: если задан — берём только картинки с указанными 1-based индексами.
     """
     paf = picture_attr_filter or None
+    pif = picture_index_filter or None
     if force_reprocess:
         if limit_n > 0:
-            return fc.get_offers(db, cats, limit=limit_n, picture_attr_filter=paf), 0
-        return fc.get_offers(db, cats, limit=0, picture_attr_filter=paf), 0
+            return fc.get_offers(db, cats, limit=limit_n, picture_attr_filter=paf, picture_index_filter=pif), 0
+        return fc.get_offers(db, cats, limit=0, picture_attr_filter=paf, picture_index_filter=pif), 0
 
     skipped = 0
     if limit_n <= 0:
-        all_o = fc.get_offers(db, cats, limit=0, picture_attr_filter=paf)
+        all_o = fc.get_offers(db, cats, limit=0, picture_attr_filter=paf, picture_index_filter=pif)
         out = [o for o in all_o if o.get("offer_id") not in existing_ids]
         skipped = len(all_o) - len(out)
         return out, skipped
@@ -364,7 +368,7 @@ def _collect_offers_to_process(
     offset = 0
     collected: list[dict] = []
     while len(collected) < limit_n:
-        batch = fc.get_offers(db, cats, limit=chunk, offset=offset, picture_attr_filter=paf)
+        batch = fc.get_offers(db, cats, limit=chunk, offset=offset, picture_attr_filter=paf, picture_index_filter=pif)
         if not batch:
             break
         for o in batch:
@@ -1996,6 +2000,15 @@ def tab_feed():
                 value=[],
                 info="Например: picture, param:picture, photo. После «Загрузить и кэшировать» список обновится автоматически.",
             )
+            feed_picture_indices = gr.CheckboxGroup(
+                label="Какие по счёту фото брать (пусто = все)",
+                choices=[
+                    ("1-е", 1), ("2-е", 2), ("3-е", 3),
+                    ("4-е", 4), ("5-е", 5),
+                ],
+                value=[],
+                info="Выберите порядковые номера фото в рамках выбранного тега. Например: «2-е» = второй <picture> у каждого оффера. Пусто = все.",
+            )
             feed_multi_image_mode = gr.Radio(
                 label="Режим нескольких картинок одного оффера",
                 choices=[
@@ -2034,15 +2047,16 @@ def tab_feed():
             cfg = _proj()
             filt = cfg.get("picture_attr_filter") or []
             mode = cfg.get("multi_image_mode") or "first_only"
-            return filt, mode
+            indices = [int(x) for x in (cfg.get("picture_index_filter") or []) if str(x).isdigit()]
+            return filt, mode, indices
 
         def parse_feed(path_typed, uploaded_path):
             name = _proj_name()
             if not name:
-                return "❌ Сначала выберите проект", gr.update(value=[]), None, gr.update(), gr.update()
+                return "❌ Сначала выберите проект", gr.update(value=[]), None, gr.update(), gr.update(), gr.update()
             feed_path = _resolve_feed_path(path_typed, uploaded_path)
             if not feed_path:
-                return "❌ Укажите путь к существующему файлу или перетащите файл в область загрузки", gr.update(value=[]), None, gr.update(), gr.update()
+                return "❌ Укажите путь к существующему файлу или перетащите файл в область загрузки", gr.update(value=[]), None, gr.update(), gr.update(), gr.update()
             try:
                 db = pm.cache_db_path(name)
                 summary = fc.parse_feed_to_cache(feed_path, db)
@@ -2056,7 +2070,7 @@ def tab_feed():
                     )
                 # Обновляем список тегов-источников
                 attr_names = _attr_choices_from_db(db)
-                saved_filter, saved_mode = _cfg_picture_values()
+                saved_filter, saved_mode, saved_indices = _cfg_picture_values()
                 # Оставляем только те из сохранённого фильтра, которые ещё присутствуют в фиде
                 active_filter = [a for a in saved_filter if a in attr_names]
                 return (
@@ -2065,38 +2079,41 @@ def tab_feed():
                     gr.update(value=None),
                     gr.update(choices=attr_names, value=active_filter),
                     gr.update(value=saved_mode),
+                    gr.update(value=saved_indices),
                 )
             except Exception as e:
-                return f"❌ {e}", gr.update(value=[]), None, gr.update(), gr.update()
+                return f"❌ {e}", gr.update(value=[]), None, gr.update(), gr.update(), gr.update()
 
         def refresh_cache():
             name = _proj_name()
             if not name:
-                return "Сначала выберите проект на вкладке **«Проекты»**. Затем здесь нажмите «Показать статус фида» или загрузите фид.", gr.update(value=[]), gr.update(), gr.update()
+                return "Сначала выберите проект на вкладке **«Проекты»**. Затем здесь нажмите «Показать статус фида» или загрузите фид.", gr.update(value=[]), gr.update(), gr.update(), gr.update()
             db = pm.cache_db_path(name)
             if not db.exists():
-                return "**Фид не загружен.** Укажите путь к YML/XML выше и нажмите «Загрузить и кэшировать».", gr.update(value=[]), gr.update(), gr.update()
+                return "**Фид не загружен.** Укажите путь к YML/XML выше и нажмите «Загрузить и кэшировать».", gr.update(value=[]), gr.update(), gr.update(), gr.update()
             cats = fc.get_categories(db)
             rows = [[cat, cnt] for cat, cnt in sorted(cats.items())]
             meta = fc.get_cache_meta(db)
             total = meta.get("offer_count", "?")
             attr_names = _attr_choices_from_db(db)
-            saved_filter, saved_mode = _cfg_picture_values()
+            saved_filter, saved_mode, saved_indices = _cfg_picture_values()
             active_filter = [a for a in saved_filter if a in attr_names]
             return (
                 f"**Фид загружен (кэш).** Офферов: **{total}**, категорий: **{len(cats)}**. Ниже таблица.",
                 gr.update(value=rows),
                 gr.update(choices=attr_names, value=active_filter),
                 gr.update(value=saved_mode),
+                gr.update(value=saved_indices),
             )
 
-        def save_picture_settings(attr_filter, multi_mode):
+        def save_picture_settings(attr_filter, multi_mode, index_filter):
             name = _proj_name()
             if not name:
                 return "❌ Сначала выберите проект"
             filt = [a for a in (attr_filter or []) if a.strip()]
             mode = (multi_mode or "first_only").strip()
-            updated = {**_proj(), "picture_attr_filter": filt, "multi_image_mode": mode}
+            indices = [int(x) for x in (index_filter or []) if str(x).isdigit()]
+            updated = {**_proj(), "picture_attr_filter": filt, "multi_image_mode": mode, "picture_index_filter": indices}
             try:
                 pm.save_project(updated)
                 global _current_project
@@ -2107,25 +2124,26 @@ def tab_feed():
                     "best_select": "Модель выбирает лучшую",
                     "all_images": "Все картинки в один запрос",
                 }
-                return f"✅ Сохранено. Теги: {filt_txt} · Режим: **{mode_labels.get(mode, mode)}**"
+                idx_txt = ", ".join(str(i) for i in indices) if indices else "_все_"
+                return f"✅ Сохранено. Теги: {filt_txt} · Режим: **{mode_labels.get(mode, mode)}** · Индексы фото: {idx_txt}"
             except Exception as e:
                 return f"❌ {e}"
 
         btn_parse.click(
             parse_feed,
             inputs=[feed_path_box, feed_upload],
-            outputs=[cache_status, categories_table, feed_upload, feed_attr_choices, feed_multi_image_mode],
+            outputs=[cache_status, categories_table, feed_upload, feed_attr_choices, feed_multi_image_mode, feed_picture_indices],
         )
 
         btn_refresh = gr.Button("Показать статус фида / обновить категории", variant="secondary")
         btn_refresh.click(
             refresh_cache,
-            outputs=[cache_status, categories_table, feed_attr_choices, feed_multi_image_mode],
+            outputs=[cache_status, categories_table, feed_attr_choices, feed_multi_image_mode, feed_picture_indices],
         )
 
         btn_save_picture_settings.click(
             save_picture_settings,
-            inputs=[feed_attr_choices, feed_multi_image_mode],
+            inputs=[feed_attr_choices, feed_multi_image_mode, feed_picture_indices],
             outputs=[picture_settings_status],
         )
 
@@ -2220,16 +2238,22 @@ def tab_run(header_model_badge: gr.HTML | None = None):
             ollama_status_html = gr.HTML(
                 value="<div style='padding:6px 14px;border-radius:6px;background:#f3f4f6;color:#6b7280'>⏳ Проверка Ollama…</div>"
             )
+            ollama_pool_status_html = gr.HTML(
+                value="<div style='padding:6px 14px;font-size:13px;color:#64748b'>⏳ Пул Ollama…</div>",
+                scale=0,
+            )
             btn_check_ollama = gr.Button("Проверить Ollama", size="sm", variant="secondary", scale=0)
-        ollama_pool_status_html = gr.HTML(
-            value="<div style='padding:4px 12px;font-size:13px;color:#64748b'>⏳ Пул Ollama…</div>"
-        )
-        run_model_hint = gr.Markdown(value="")
+        run_model_hint = gr.Markdown(value="", visible=False)
 
         # ── Категории + лимит ────────────────────────────────────────────────
         with gr.Row(elem_classes=["run-tab-filters-row"]):
             with gr.Column(scale=1, min_width=300):
                 gr.Markdown("### Категории")
+                cat_search_box = gr.Textbox(
+                    label="Поиск категорий",
+                    placeholder="Введите часть названия…",
+                    scale=1,
+                )
                 categories_check = gr.CheckboxGroup(
                     label="Отметьте нужные или оставьте пустым (= весь фид)",
                     choices=[],
@@ -2245,11 +2269,11 @@ def tab_run(header_model_badge: gr.HTML | None = None):
                     minimum=0,
                 )
                 with gr.Row():
-                    btn_limit_10 = gr.Button("10", size="sm")
-                    btn_limit_50 = gr.Button("50", size="sm")
-                    btn_limit_100 = gr.Button("100", size="sm")
-                    btn_limit_500 = gr.Button("500", size="sm")
-                    btn_limit_0 = gr.Button("∞", size="sm")
+                    btn_limit_10 = gr.Button("10", size="sm", min_width=40)
+                    btn_limit_50 = gr.Button("50", size="sm", min_width=40)
+                    btn_limit_100 = gr.Button("100", size="sm", min_width=40)
+                    btn_limit_500 = gr.Button("500", size="sm", min_width=40)
+                    btn_limit_0 = gr.Button("∞", size="sm", min_width=40)
                 process_all = gr.Checkbox(
                     label="Обработать весь фид (игнорировать категории)",
                     value=False,
@@ -2475,6 +2499,16 @@ def tab_run(header_model_badge: gr.HTML | None = None):
             cats = sorted(fc.get_categories(db).keys())
             prev = [x for x in (selected or []) if x in cats]
             return gr.update(choices=cats, value=prev)
+
+        def filter_categories(search_text: str, selected: list | None):
+            db = _cache_db()
+            if not db or not db.exists():
+                return gr.update()
+            cats = sorted(fc.get_categories(db).keys())
+            q = (search_text or "").strip().lower()
+            filtered = [c for c in cats if q in c.lower()] if q else cats
+            valid_selected = [x for x in (selected or []) if x in filtered]
+            return gr.update(choices=filtered, value=valid_selected)
 
         def run_processing(selected_cats, limit, all_feed, force_reprocess=False):
             global _run_log, _run_stop_event
@@ -3322,10 +3356,11 @@ def tab_run(header_model_badge: gr.HTML | None = None):
 
         def refresh_ollama_run_tab():
             _url = pm.get_global_settings().get("ollama_url", pm.GLOBAL_DEFAULTS["ollama_url"])
+            _hint = _run_model_hint_text()
             out = [
                 _ollama_status_html(),
                 format_ollama_pool_status_html(_url),
-                _run_model_hint_text(),
+                gr.update(value=_hint, visible=bool(_hint)),
             ]
             if header_model_badge is not None:
                 out.append(_get_model_in_memory_badge())
@@ -3339,6 +3374,7 @@ def tab_run(header_model_badge: gr.HTML | None = None):
             outputs=_check_outputs,
         )
         btn_load_cats.click(load_categories, inputs=[categories_check], outputs=categories_check)
+        cat_search_box.change(filter_categories, inputs=[cat_search_box, categories_check], outputs=categories_check)
         btn_limit_10.click(lambda: 10, outputs=limit_box)
         btn_limit_50.click(lambda: 50, outputs=limit_box)
         btn_limit_100.click(lambda: 100, outputs=limit_box)
@@ -3820,14 +3856,6 @@ def tab_run(header_model_badge: gr.HTML | None = None):
 def tab_results():
     with gr.Tab("Результаты") as results_tab:
         gr.Markdown("## Результаты обработки")
-        gr.Markdown(
-            "**Здесь — список обработанных офферов** (карточки с фото и атрибутами). "
-            "Нажмите ✏️ на карточке, чтобы открыть форму правки. Список подгружается при открытии вкладки и по кнопке «Обновить». "
-            "**Надпись** на карточке — из сохранённого `text_detection` (см. **Настройки**: «Искать надписи», режим «тот же JSON» или отдельный запрос, **text_enabled** в направлении). "
-            "**Паттерн / принт = текст** — только класс принта; полный текст на фото — из блока надписей. "
-            "**Не гонять модель на дублях** — в **Настройках**: дедуп по URL или по dHash кэша; здесь ниже — только скрытие дублей в списке. "
-            "**Сохранить правку** применяет атрибуты и текст ко **всем карточкам с той же картинкой** (как при дедупе по URL: одинаковый путь без query)."
-        )
         with gr.Row():
             conf_min = gr.Slider(0, 100, value=0, step=5, label="Уверенность от (%)", interactive=True)
             conf_max = gr.Slider(0, 100, value=100, step=5, label="Уверенность до (%)", interactive=True)
@@ -3874,24 +3902,22 @@ def tab_results():
                     "Для **надписей** — подстрока в объединённом тексте с фото."
                 ),
             )
-            btn_results_prev = gr.Button("◀", size="sm", min_width=44, scale=0)
+        with gr.Row():
+            btn_results_prev = gr.Button("◀  Назад", min_width=110, scale=0)
             results_page = gr.Number(
                 value=1,
                 minimum=1,
                 precision=0,
-                label="Страница",
+                label="Стр.",
                 scale=0,
+                min_width=80,
                 container=True,
             )
-            btn_results_next = gr.Button("▶", size="sm", min_width=44, scale=0)
-        csv_download = gr.DownloadButton(label="Скачать CSV (сначала «Выгрузить в CSV»)", visible=True)
-        csv_download_light = gr.DownloadButton(label="Скачать узкий CSV (external_id, атрибут, значение)", visible=True)
-        export_status = gr.Markdown(value="")
-        gr.Markdown(
-            "_В CSV попадает **тот же набор карточек**, что и при «Обновить»: категория, **модель**, ползунки, "
-            "режим «Ползунки применять к», **сужение по значению атрибута** и скрытие дублей по URL. "
-            "**Узкий CSV** — только колонки **external_id** (id оффера из фида), **attribute_name**, **attribute_value**._"
-        )
+            btn_results_next = gr.Button("Вперёд  ▶", min_width=110, scale=0)
+        with gr.Row():
+            csv_download = gr.DownloadButton(label="↓ Скачать CSV", visible=True, scale=0)
+            csv_download_light = gr.DownloadButton(label="↓ Скачать узкий CSV (id, атрибут, значение)", visible=True, scale=0)
+            export_status = gr.Markdown(value="")
 
         _g_rr = pm.get_global_settings()
         _proj_keys = []
@@ -3950,34 +3976,24 @@ def tab_results():
 
         empty_pick = gr.update(visible=False, value=False)
 
+        # Строка 1: выбор карточек + добавить все по фильтру в очередь повтора
         with gr.Row():
-            gr.Markdown(
-                "**Над карточками:** **«В список: все по текущему фильтру»** — в **очередь повторной обработки** (сводка в блоке выше, без тысяч строк в списке). "
-                "**Галочки** — «все отфильтрованные» / **текущая страница** / снять выбор. "
-                "**«В очередь: отмеченные галочками»** — переносит только отмеченные в ту же очередь."
-            )
-        with gr.Row():
-            btn_rr_select_filtered = gr.Button("В список: все по текущему фильтру", variant="primary", scale=0)
-        with gr.Row():
-            btn_pick_all_filtered_cards = gr.Button(
-                "☑ Выбрать все отфильтрованные (галочки)", variant="secondary", scale=0
-            )
-            btn_pick_all_page_cards = gr.Button("☑ Выбрать все на странице", variant="secondary", scale=0)
-            btn_pick_none_page_cards = gr.Button("☐ Снять выбор на странице", variant="secondary", scale=0)
+            btn_pick_all_filtered_cards = gr.Button("☑ Все по фильтру", variant="secondary", scale=0, size="sm")
+            btn_pick_all_page_cards = gr.Button("☑ Страница", variant="secondary", scale=0, size="sm")
+            btn_pick_none_page_cards = gr.Button("☐ Снять", variant="secondary", scale=0, size="sm")
             cb_page_select_all = gr.Checkbox(
-                label="На странице выделить все",
+                label="Вся страница",
                 value=False,
                 scale=0,
                 elem_classes=["result-page-select-all"],
             )
-            btn_delete_all_picked = gr.Button("🗑 Удалить все отмеченные", variant="stop", scale=0)
-            btn_rr_add_checked_cards = gr.Button(
-                "📋 В очередь повтора: отмеченные галочками", variant="secondary", scale=0
-            )
-
+            btn_rr_select_filtered = gr.Button("📥 В повтор: все по фильтру", variant="primary", scale=0, size="sm")
+        # Строка 2: действия с отмеченными галочками
         with gr.Row():
-            btn_ft_queue_add = gr.Button("📌 В очередь дообучения (отмеченные галочками)", variant="secondary", scale=0)
-            btn_ft_queue_clear = gr.Button("Очистить очередь дообучения", variant="stop", scale=0)
+            btn_rr_add_checked_cards = gr.Button("📋 В повтор: отмеченные", variant="secondary", scale=0, size="sm")
+            btn_ft_queue_add = gr.Button("📌 В дообучение: отмеченные", variant="secondary", scale=0, size="sm")
+            btn_ft_queue_clear = gr.Button("Очистить дообучение", variant="stop", scale=0, size="sm")
+            btn_delete_all_picked = gr.Button("🗑 Удалить отмеченные", variant="stop", scale=0, size="sm")
         ft_queue_status = gr.Markdown(value="")
 
         def _add_picked_to_finetune_queue(selected_ids):
@@ -5135,11 +5151,7 @@ def tab_results():
 
 def tab_finetune():
     with gr.Tab("Дообучение"):
-        gr.Markdown("## Дообучение модели (LoRA via unsloth)")
-        gr.Markdown(
-            "**Схема:** правки на «Результаты» + при необходимости авто-строки из БД → **Собрать датасет** (`train.jsonl`) → **LoRA** → **Экспорт в Ollama**. "
-            "Ниже — сводка по текущему проекту."
-        )
+        gr.Markdown("## Дообучение модели (LoRA)")
         finetune_step1_info = gr.Markdown(value=get_finetune_dashboard_markdown())
         with gr.Row():
             btn_refresh_finetune_info = gr.Button("Обновить сводку", size="sm", variant="secondary")
@@ -5165,12 +5177,6 @@ def tab_finetune():
                     info="После остановки сборки подставьте сюда число «Обработано примеров» — следующая сборка продолжится с этого места.",
                 )
                 include_images_cb = gr.Checkbox(label="Включить картинки в датасет", value=True)
-                gr.Markdown(
-                    "**По умолчанию всё автоматически:** в датасет попадают **правки** из `corrections.json` и **уверенные** строки из БД результатов "
-                    "(offer_id из правок в авто не подмешиваются). После сборки: **дедуп по URL картинки**, файл **`eval_anchors.jsonl`** для блока «Оценка до/после», "
-                    "**`review_low_confidence.json`** — пул сомнительных офферов для разметки. "
-                    "**Ручная очередь** на вкладке «Результаты» — опционально. В каждой правке сохраняется **`before_edit`** (снимок модели до правки) для будущих пар «было→стало» / DPO."
-                )
                 include_auto_good_cb = gr.Checkbox(
                     label="Автодобавление уверенных карточек из БД результатов",
                     value=True,
@@ -5245,12 +5251,13 @@ def tab_finetune():
                     value="Qwen/Qwen3.5-9B-Instruct",
                     allow_custom_value=True,
                 )
-                gr.Markdown("_Qwen3.5 — нативный мультимодальный (early fusion), видит картинки из коробки. Собери датасет **с картинками** → модель обучится распознавать именно твои атрибуты одежды. 35B на HuggingFace = Qwen3.5-35B-A3B._")
-                gr.Markdown(
-                    "_**Инференс в Ollama** (например `qwen3.5:35b` / `27b`, GGUF Q4, ~17–23 ГБ на диске) на **24 GB** часто нормально помещается — это не то же самое, что **LoRA здесь**: "
-                    "обучение тянет веса HF + адаптер + градиенты. На **24 GB** для LoRA безопаснее **4B/9B**; **27B/35B** пробуйте при необходимости — при нехватке памяти шаг упадёт с сообщением (или выберите меньшую базу)._"
-                )
-                gr.Markdown("_Адаптер привязан к выбранной базе (один адаптер = одна модель). Папки сохраняются как **lora_out_&lt;модель&gt;** (например `lora_out_35B-A3B`). Старые папки (lora_out, lora_out_2) — используй для 35B только если этот адаптер учился на 35B (база указана в adapter_config.json внутри папки)._")
+                with gr.Accordion("💡 Памятка: объём GPU / LoRA vs инференс", open=False):
+                    gr.Markdown(
+                        "**Инференс в Ollama** (GGUF Q4) и **LoRA-обучение** — разные нагрузки. "
+                        "Ollama qwen3.5:35b умещается на 24 GB; LoRA тянет полные веса HF + градиенты → на 24 GB безопаснее **4B/9B**. "
+                        "**27B/35B** — пробуйте при необходимости; при нехватке памяти шаг упадёт с ошибкой.\n\n"
+                        "Адаптер привязан к выбранной базе. Папка: `lora_out_<модель>` (например `lora_out_35B-A3B`)."
+                    )
                 _grad_accum = 4
                 def _steps_from_examples(max_ex, batch):
                     if max_ex is None or (isinstance(max_ex, (int, float)) and max_ex <= 0):

@@ -966,6 +966,9 @@ DEFAULT_CONFIG = {
     #   "best_select" — небольшая модель выбирает лучшую картинку, затем анализ по ней
     #   "all_images"  — все картинки передаются модели одним запросом
     "multi_image_mode": "first_only",
+    # Порядковые номера картинок (1-based) которые брать из тега. Пустой список [] = все.
+    # Например [1, 3] — только первая и третья картинка в рамках выбранного тега.
+    "picture_index_filter": [],
 }
 PROJECT_KEYS = {
     "name",
@@ -983,6 +986,7 @@ PROJECT_KEYS = {
     "omit_offer_title_in_prompt",
     "picture_attr_filter",
     "multi_image_mode",
+    "picture_index_filter",
 }
 
 # Устаревшие ключи из старых config.json — не подмешиваются в инференс (промпты только из Запуска / пресетов).
